@@ -1,0 +1,96 @@
+name: Publish CUDA image
+
+on:
+  push:
+    branches: [main, feat/cuda-docker]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - pyproject.toml
+      - uv.lock
+      - src/**
+      - README.md
+      - LICENSE
+      - .github/workflows/publish-image.yaml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ghcr-cuda-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'qtmleap/jeff' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/cuda-docker')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/qtmleap/jeff
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Prepare hosted runner disk
+        # CUDA wheels and uv's temporary cache are large. Only this disposable runner is changed.
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup
+          df -h /
+      - name: Image tags
+        id: tags
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          branch_tag="branch-$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g')"
+          echo "branch=$branch_tag" >> "$GITHUB_OUTPUT"
+          echo "sha=sha-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tags.outputs.branch }}
+            ${{ env.IMAGE }}:${{ steps.tags.outputs.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/qtmleap/jeff
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=Jeff CUDA classifier for Linux amd64
+          cache-from: type=gha,scope=jeff-cuda-amd64
+          cache-to: type=gha,scope=jeff-cuda-amd64,mode=max
+      - name: Verify registry manifest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          BRANCH_TAG: ${{ steps.tags.outputs.branch }}
+          SHA_TAG: ${{ steps.tags.outputs.sha }}
+        run: |
+          test -n "$DIGEST"
+          docker buildx imagetools inspect "$IMAGE@$DIGEST"
+          for tag in "$BRANCH_TAG" "$SHA_TAG"; do
+            actual=$(docker buildx imagetools inspect "$IMAGE:$tag" --format '{{json .Manifest.Digest}}' | tr -d '"')
+            test "$actual" = "$DIGEST"
+          done
+          {
+            echo '### Published CUDA image'
+            echo "- Branch: \`$IMAGE:$BRANCH_TAG\`"
+            echo "- Commit: \`$IMAGE:$SHA_TAG\`"
+            echo "- Immutable: \`$IMAGE@$DIGEST\`"
+            echo '- linux/amd64; GPU inference is not tested on this hosted runner.'
+          } >> "$GITHUB_STEP_SUMMARY"
+          df -h /

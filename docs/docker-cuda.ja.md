@@ -55,6 +55,19 @@ export JEFF_MODEL_DIR="$HOME/models/Jeff-Qwen3.5-2B"
 export JEFF_HTTP_PORT=8766
 mkdir -p "$JEFF_MODEL_DIR"
 docker compose config --quiet
+export JEFF_IMAGE=ghcr.io/qtmleap/jeff:branch-feat-cuda-docker
+docker compose pull jeff
+```
+
+公開済みイメージを使う場合は上記のpullでビルドを省略できます。運用時はActionsの実行サマリーにある
+`ghcr.io/qtmleap/jeff@sha256:...` をJEFF_IMAGEに指定するとdigestで固定できます。
+パッケージの公開範囲は組織設定に従います。privateの場合は既存の認可済みレジストリ認証を使用してください。
+この手順はPATの新規発行や公開設定変更を要求しません。pull権限がなければ管理者に確認するか、次のローカルビルドを使います。
+
+ローカルでビルドする場合は次に切り替えます。
+
+```sh
+export JEFF_IMAGE=jeff-cuda:local
 docker compose build jeff
 ```
 
@@ -73,7 +86,7 @@ docker run --rm \
   --user "$(id -u):$(id -g)" \
   -e HF_HOME=/tmp/hf -e HF_HUB_DISABLE_IMPLICIT_TOKEN=1 \
   --mount "type=bind,src=$JEFF_MODEL_DIR,dst=/download" \
-  --entrypoint /app/.venv/bin/hf jeff-cuda:local \
+  --entrypoint /app/.venv/bin/hf "$JEFF_IMAGE" \
   download mstrasser/Jeff-Qwen3.5-2B \
   --revision 2b1055eddeb00788f22c0b6156b8d6fa6fc0eecd \
   --local-dir /download
@@ -117,7 +130,7 @@ JeffのCUDA実装はBF16を使用します。GPU認識だけでなくBF16演算�
 ## 5. 起動・推論確認
 
 ```sh
-docker compose up -d --wait --wait-timeout 300
+docker compose up -d --no-build --pull never --wait --wait-timeout 300
 docker compose ps
 docker compose logs --tail 100 jeff
 curl --fail-with-body http://127.0.0.1:8766/health
@@ -167,7 +180,7 @@ healthcheckがunhealthyになっただけではDockerは再起動しません。
 
 公開先の初期値は **127.0.0.1:8766** です。コンテナ内は0.0.0.0:8765ですが、LANへは公開しません。
 MacのMLXサービスは127.0.0.1:8765のままで、変更しません。
-環境変数はシェルを閉じると消えるため、次回もJEFF_MODEL_DIRを設定してください。
+環境変数はシェルを閉じると消えるため、次回もJEFF_MODEL_DIRとJEFF_IMAGEを設定してください。
 認証・外部公開はこの構成に含めていません。
 
 ## 検証範囲
@@ -183,3 +196,26 @@ Ubuntu実機での上記検証が必要です。MacのMLX検証結果をCUDA検�
 参考: [Docker Compose GPU予約](https://docs.docker.com/compose/how-tos/gpu-support/)、
 [Jeff](https://github.com/firelex/jeff)、
 [モデルカード](https://huggingface.co/mstrasser/Jeff-Qwen3.5-2B)。
+
+## GHCR公開とビルドキャッシュ
+
+`.github/workflows/publish-image.yaml` は `qtmleap/jeff` の `main` または `feat/cuda-docker` への
+ビルド入力変更のpushで実行します。workflow_dispatchも定義していますが、GitHubのUIでの手動実行は
+ワークフローがデフォルトブランチに存在することが前提です。featureブランチではpushトリガーを使用します。
+mainへのマージはこの設定を追加する作業には含まれません。
+
+GHCRタグは `branch-feat-cuda-docker`（mainでは `branch-main`）と `sha-<完全なコミットSHA>`。
+`latest`は作りません。SHAタグはコミット識別用ですが、レジストリ側の不変性保証はないため、厳密な固定にはdigestを使います。
+権限は `contents: read` と公開ジョブの `packages: write`、認証は標準 `GITHUB_TOKEN` のみです。
+パッケージ公開範囲・組織ポリシーは変更しません。認証情報をbuild argやイメージへ渡しません。
+
+Dockerfileは依存定義を先にコピーし、`--no-install-project` でCUDA依存レイヤーを作ります。
+ソースをコピーした後にプロジェクトをインストールするため、ソースだけの変更では依存レイヤーを再利用します。
+どちらのsyncも `--locked` を維持します。uvは `--mount=type=cache` を使い、同じBuildKit上でダウンロードを再利用します。
+Actions間では `cache-from/cache-to: type=gha,mode=max` によりレイヤーを再利用します。
+uvのcache mountの中身自体はGHAへexportされないため、依存レイヤーが無効になると新規runnerでは再ダウンロードします。
+大きなCUDA wheelキャッシュの二重保存を避けるため、cache mountの別途アップロードは行いません。
+
+標準の使い捨てUbuntu runnerで不要なプリインストールSDKを削除して空き容量を確保します。
+モデル重みやローカル環境はbuild contextに含まず、公開イメージ・Actionsキャッシュにも含めません。
+runnerではCUDA版PyTorchとJeffのimportをビルド時に確認しますが、GPU推論は実機で別途検証してください。

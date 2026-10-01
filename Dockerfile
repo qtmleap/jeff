@@ -17,10 +17,16 @@ ENV UV_LINK_MODE=copy \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH"
-COPY pyproject.toml uv.lock README.md LICENSE ./
+# Resolve the locked dependency layer before source files, so source edits do not reinstall CUDA.
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,id=jeff-uv,target=/root/.cache/uv,sharing=locked \
+    uv sync --locked --no-default-groups --extra cuda --no-install-project
+COPY README.md LICENSE ./
 COPY src/ ./src/
-RUN --mount=type=cache,target=/root/.cache/uv \
+RUN --mount=type=cache,id=jeff-uv,target=/root/.cache/uv,sharing=locked \
     uv sync --locked --no-default-groups --extra cuda --no-editable
+# Build-time import check does not require a GPU; inference still needs the Ubuntu GPU host.
+RUN python -c "import torch, jeff.server; assert torch.version.cuda and torch.version.cuda.startswith('13.'), torch.version.cuda"
 
 ENV JEFF_BACKEND=pytorch \
     JEFF_DEVICE=cuda \
