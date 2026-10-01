@@ -72,17 +72,10 @@ For Apple silicon GPU acceleration, use the native MLX command above.
 services:
   jeff:
     image: ghcr.io/qtmleap/jeff:latest
-    platform: linux/amd64
     init: true
     restart: unless-stopped
-    stop_grace_period: 30s
     environment:
-      JEFF_BACKEND: pytorch
-      JEFF_DEVICE: cuda
       JEFF_MODEL_REPO: mstrasser/Jeff-Qwen3.5-2B
-      JEFF_MODEL_REVISION: main
-      JEFF_HOST: 0.0.0.0
-      PORT: "8765"
     volumes:
       - models:/models
       - compile-cache:/cache
@@ -105,8 +98,9 @@ docker compose logs -f jeff
 ```
 
 The container downloads the model selected by `JEFF_MODEL_REPO` before starting Jeff, then reuses downloaded
-files from the `models` volume on later starts. `JEFF_MODEL_REVISION` accepts a Hugging Face branch, tag or
-commit SHA; use a commit SHA to pin the model. No manual download or host model directory is needed.
+files from the `models` volume on later starts. The image defaults to CUDA and listens on port 8765.
+The model shown is also the default; omit `environment` to use it unchanged. Add `JEFF_MODEL_REVISION`
+only to select a Hugging Face tag or commit SHA instead of the default `main`. No manual download or host model directory is needed.
 The first start includes downloading the model and warming up inference, so allow time for it to become healthy.
 
 There is no `ports` mapping: other services on the same Compose network use `http://jeff:8765`
