@@ -1,0 +1,73 @@
+name: Tag verified image as latest and upstream version
+
+on:
+  push:
+    branches: [feat/cuda-docker]
+    paths: [.github/workflows/promote-latest.yaml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Share the lock with regular publication so two jobs cannot race latest.
+concurrency:
+  group: ghcr-cuda-publish
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: github.repository == 'qtmleap/jeff' && github.ref == 'refs/heads/feat/cuda-docker'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/qtmleap/jeff
+      VERSION_TAG: upstream-v1.1-1-gf067882
+      SOURCE_DIGEST: sha256:39a1554f5809f3401bd7476b15a40f72b732c16ee0362e6a2106caea53cd2296
+    steps:
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refuse to overwrite an unrelated latest
+        # The package is already public. Do not change its visibility or access policy.
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.error, urllib.request
+          token = json.load(urllib.request.urlopen(
+              'https://ghcr.io/token?service=ghcr.io&scope=repository:qtmleap/jeff:pull'))['token']
+          for tag in ('latest', os.environ['VERSION_TAG']):
+              req = urllib.request.Request('https://ghcr.io/v2/qtmleap/jeff/manifests/' + tag, headers={
+                  'Authorization': 'Bearer ' + token,
+                  'Accept': 'application/vnd.oci.image.index.v1+json'})
+              try:
+                  with urllib.request.urlopen(req) as response:
+                      current = response.headers['Docker-Content-Digest']
+              except urllib.error.HTTPError as error:
+                  if error.code != 404:
+                      raise
+                  print(f'{tag} does not exist; creation permitted')
+              else:
+                  assert current == os.environ['SOURCE_DIGEST'], f'Refusing to replace {tag}: {current}'
+                  print(f'{tag} already matches the verified image')
+          PY
+      - name: Tag existing manifest without rebuilding
+        run: |
+          docker buildx imagetools create --tag "$IMAGE:latest" --tag "$IMAGE:$VERSION_TAG" "$IMAGE@$SOURCE_DIGEST"
+          for tag in latest "$VERSION_TAG"; do
+            actual=$(docker buildx imagetools inspect "$IMAGE:$tag" --format '{{json .Manifest.Digest}}' | tr -d '"')
+            test "$actual" = "$SOURCE_DIGEST"
+          done
+          {
+            echo '### latest points to the verified image'
+            echo "\`$IMAGE:latest\`"
+            echo "\`$IMAGE:$VERSION_TAG\`"
+            echo "\`$IMAGE@$actual\`"
+            echo 'No image rebuild or layer download was needed.'
+          } >> "$GITHUB_STEP_SUMMARY"

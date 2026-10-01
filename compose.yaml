@@ -1,7 +1,7 @@
 name: jeff-cuda
 services:
   jeff:
-    image: ${JEFF_IMAGE:-ghcr.io/qtmleap/jeff:branch-feat-cuda-docker}
+    image: ${JEFF_IMAGE:-ghcr.io/qtmleap/jeff:latest}
     platform: linux/amd64
     build:
       context: .

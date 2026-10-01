@@ -11,14 +11,13 @@ on:
       - src/**
       - README.md
       - LICENSE
-      - .github/workflows/publish-image.yaml
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ghcr-cuda-${{ github.ref }}
+  group: ghcr-cuda-publish
   cancel-in-progress: false
 
 jobs:
@@ -36,6 +35,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Prepare hosted runner disk
         # CUDA wheels and uv's temporary cache are large. Only this disposable runner is changed.
         run: |
@@ -50,6 +50,12 @@ jobs:
           branch_tag="branch-$(printf '%s' "$BRANCH" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g')"
           echo "branch=$branch_tag" >> "$GITHUB_OUTPUT"
           echo "sha=sha-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          git fetch --no-tags https://github.com/firelex/jeff.git '+refs/heads/main:refs/remotes/jeff-upstream/main' '+refs/tags/*:refs/tags/jeff-upstream/*'
+          base=$(git merge-base HEAD refs/remotes/jeff-upstream/main)
+          version=$(git describe --tags --match 'jeff-upstream/*' --always --abbrev=7 "$base")
+          version=${version#jeff-upstream/}
+          version=$(printf '%s' "$version" | sed 's/[^a-zA-Z0-9_.-]/-/g')
+          echo "upstream=upstream-$version" >> "$GITHUB_OUTPUT"
       - name: Set up Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: Log in to GHCR
@@ -66,11 +72,14 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ steps.tags.outputs.upstream }}
             ${{ env.IMAGE }}:${{ steps.tags.outputs.branch }}
             ${{ env.IMAGE }}:${{ steps.tags.outputs.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/qtmleap/jeff
             org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tags.outputs.upstream }}
             org.opencontainers.image.description=Jeff CUDA classifier for Linux amd64
           cache-from: type=gha,scope=jeff-cuda-amd64
           cache-to: type=gha,scope=jeff-cuda-amd64,mode=max
@@ -79,15 +88,18 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
           BRANCH_TAG: ${{ steps.tags.outputs.branch }}
           SHA_TAG: ${{ steps.tags.outputs.sha }}
+          UPSTREAM_TAG: ${{ steps.tags.outputs.upstream }}
         run: |
           test -n "$DIGEST"
           docker buildx imagetools inspect "$IMAGE@$DIGEST"
-          for tag in "$BRANCH_TAG" "$SHA_TAG"; do
+          for tag in latest "$UPSTREAM_TAG" "$BRANCH_TAG" "$SHA_TAG"; do
             actual=$(docker buildx imagetools inspect "$IMAGE:$tag" --format '{{json .Manifest.Digest}}' | tr -d '"')
             test "$actual" = "$DIGEST"
           done
           {
             echo '### Published CUDA image'
+            echo "- Default: \`$IMAGE:latest\`"
+            echo "- Upstream base: \`$IMAGE:$UPSTREAM_TAG\`"
             echo "- Branch: \`$IMAGE:$BRANCH_TAG\`"
             echo "- Commit: \`$IMAGE:$SHA_TAG\`"
             echo "- Immutable: \`$IMAGE@$DIGEST\`"

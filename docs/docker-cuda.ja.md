@@ -55,7 +55,7 @@ export JEFF_MODEL_DIR="$HOME/models/Jeff-Qwen3.5-2B"
 export JEFF_HTTP_PORT=8766
 mkdir -p "$JEFF_MODEL_DIR"
 docker compose config --quiet
-export JEFF_IMAGE=ghcr.io/qtmleap/jeff:branch-feat-cuda-docker
+export JEFF_IMAGE=ghcr.io/qtmleap/jeff:latest
 docker compose pull jeff
 ```
 
@@ -224,8 +224,16 @@ Actions間のwarm-cacheヒットと短縮時間も未測定です。MacのMLX検
 ワークフローがデフォルトブランチに存在することが前提です。featureブランチではpushトリガーを使用します。
 mainへのマージはこの設定を追加する作業には含まれません。
 
-GHCRタグは `branch-feat-cuda-docker`（mainでは `branch-main`）と `sha-<完全なコミットSHA>`。
-`latest`は作りません。SHAタグはコミット識別用ですが、レジストリ側の不変性保証はないため、厳密な固定にはdigestを使います。
+利用する標準タグは **`ghcr.io/qtmleap/jeff:latest`** です。
+今後の通常ビルドは `latest` と追跡用の `branch-feat-cuda-docker`（mainでは `branch-main`）、
+`sha-<完全なコミットSHA>`、上流コード追跡用の `upstream-<git describe>` を公開します。タグは更新可能なので、厳密な固定にはdigestを使います。
+`latest`の更新は共有concurrencyグループで直列化します。現在のCUDA対応featureブランチからの更新も対象です。
+ワークフローファイルだけの変更では通常ビルドを起動しません。
+
+初回のlatest追加には `.github/workflows/promote-latest.yaml` を使用します。
+確認済みの上記digestへ `latest` と `upstream-v1.1-1-gf067882` を追加するだけで、再ビルドしません。
+この移行ワークフローは自身の変更pushだけで起動し、既存の対象タグが別digestなら上書きせず失敗します。
+後日latestが更新された後に古いdigestへ戻す用途には使わないでください。
 権限は `contents: read` と公開ジョブの `packages: write`、認証は標準 `GITHUB_TOKEN` のみです。
 パッケージ公開範囲・組織ポリシーは変更しません。認証情報をbuild argやイメージへ渡しません。
 
@@ -239,3 +247,15 @@ uvのcache mountの中身自体はGHAへexportされないため、依存レイ�
 標準の使い捨てUbuntu runnerで不要なプリインストールSDKを削除して空き容量を確保します。
 モデル重みやローカル環境はbuild contextに含まず、公開イメージ・Actionsキャッシュにも含めません。
 runnerではCUDA版PyTorchとJeffのimportをビルド時に確認しますが、GPU推論は実機で別途検証してください。
+
+### 上流バージョンの意味
+
+上流の実在リリース [v1.1](https://github.com/firelex/jeff/releases/tag/v1.1) のコミットは
+`f0397f3785d93f73a01411d785d2ed026f53181d` です。今回の上流ベースはその1コミット後の
+`f06788292874c21a5b5c41549ac220dd9e15da7f`（`git describe`: `v1.1-1-gf067882`）なので、
+イメージには **`upstream-v1.1-1-gf067882`** を付け、純粋な `v1.1` タグは付けません。
+pyprojectのパッケージ版は `0.2.0` で、上流リリース名やモデルのv1.1とは別のものです。
+
+今後のビルドでは上流mainとの共通祖先を求め、上流タグだけを対象にgit describeして追跡用タグを生成します。
+このタグはフォークの上流ベースを表します。Docker構成などフォーク独自の変更で同じ上流タグのdigestが更新される
+場合があるため、完全固定が必要な場合はSHAタグに加えてdigestを記録してください。
