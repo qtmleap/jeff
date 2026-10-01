@@ -1,0 +1,26 @@
+# Only these project inputs may enter the build context.
+**
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!src/
+!src/**
+# Even inside src, exclude accidental local files and credentials.
+**/__pycache__
+**/*.pyc
+**/.env
+**/.env.*
+**/.git
+**/.aws
+**/.ssh
+**/*token*
+**/*secret*
+**/*.pem
+**/*.key
+**/*.safetensors
+**/*.pt
+**/*.pth
+**/*.bin
