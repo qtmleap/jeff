@@ -103,6 +103,22 @@ printf '%s  %s\n' \
   "$JEFF_MODEL_DIR/model.safetensors" | sha256sum -c -
 ```
 
+非root実行ユーザーが読み取り専用マウントを読めることも、GPUなしで先に検証します。
+
+```sh
+docker run --rm --user 10001:10001 \
+  --mount "type=bind,src=$JEFF_MODEL_DIR,dst=/models/jeff-2b,readonly" \
+  --entrypoint /app/.venv/bin/python "$JEFF_IMAGE" -c '
+from pathlib import Path
+root = Path("/models/jeff-2b")
+for name in ("model.safetensors", "readout.safetensors", "decision_config.json", "config.json",
+             "tokenizer.json", "tokenizer_config.json", "processor_config.json", "chat_template.jinja"):
+    with (root / name).open("rb") as f:
+        assert f.read(1), name
+print("UID 10001: checkpoint readable")
+'
+```
+
 モデルリビジョンは `2b1055eddeb00788f22c0b6156b8d6fa6fc0eecd`。
 Composeはモデルを読み取り専用でマウントし、存在しないパスの自動作成を拒否します。
 
@@ -189,9 +205,13 @@ MacのMLXサービスは127.0.0.1:8765のままで、変更しません。
 GPU予約、ループバック公開、モデル読み取り専用、キャッシュ、再起動設定、
 モデルパス未指定時の拒否、全シェル例の `sh -n` とBF16検証コードのPython構文を確認しました。
 Dockerfileは起動・依存・非root・healthcheck設定を静的確認しました。Hadolintは未導入のため未実行です。
-ビルドチェックによるイメージ検証も未実施です。既存のMLX環境には変更を加えていません。
-Ubuntu用イメージのビルド、NVIDIA Container Toolkit連携、CUDA/BF16実演算、GPU推論、再起動復帰は
-Ubuntu実機での上記検証が必要です。MacのMLX検証結果をCUDA検証結果として扱わないでください。
+[Actions run 36832222899](https://github.com/qtmleap/jeff/actions/runs/36832222899)で
+コミット `1eeaa49cfe71842c6c547701037dafa2acfa0877` のlinux/amd64イメージをビルド・GHCRへpushしました。
+CUDA 13版PyTorchとJeffのimport確認、両タグの匿名manifest取得とdigest一致を確認済みです。
+固定参照は `ghcr.io/qtmleap/jeff@sha256:39a1554f5809f3401bd7476b15a40f72b732c16ee0362e6a2106caea53cd2296`。
+Macにはイメージレイヤーをダウンロードしていません。既存のMLX環境にも変更を加えていません。
+NVIDIA Container Toolkit連携、CUDA/BF16実演算、GPU推論、再起動復帰はUbuntu実機での上記検証が必要です。
+Actions間のwarm-cacheヒットと短縮時間も未測定です。MacのMLX検証結果をCUDA検証結果として扱わないでください。
 
 参考: [Docker Compose GPU予約](https://docs.docker.com/compose/how-tos/gpu-support/)、
 [Jeff](https://github.com/firelex/jeff)、
