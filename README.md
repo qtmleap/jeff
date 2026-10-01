@@ -62,6 +62,59 @@ Each answer has a probability per option, the chosen option and a confidence. Th
 of up to 254 options with the v1.1 Qwen models, 26 with Jeff-Gemma4-E2B), `noul` (yes/no, returned as a probability) and `score` (a point on a scale you describe).
 Several independent questions in one request are answered together.
 
+## Docker Compose (NVIDIA CUDA)
+
+On a Linux x86-64 host with an NVIDIA GPU, a compatible NVIDIA driver and NVIDIA Container Toolkit,
+save the following as `compose.yaml`. This uses the prebuilt image published by the `qtmleap/jeff` fork.
+For Apple silicon GPU acceleration, use the native MLX command above.
+
+```yaml
+services:
+  jeff:
+    image: ghcr.io/qtmleap/jeff:latest
+    platform: linux/amd64
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      JEFF_BACKEND: pytorch
+      JEFF_DEVICE: cuda
+      JEFF_MODEL_REPO: mstrasser/Jeff-Qwen3.5-2B
+      JEFF_MODEL_REVISION: main
+      JEFF_HOST: 0.0.0.0
+      PORT: "8765"
+    volumes:
+      - models:/models
+      - compile-cache:/cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+volumes:
+  models:
+  compile-cache:
+```
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose logs -f jeff
+```
+
+The container downloads the model selected by `JEFF_MODEL_REPO` before starting Jeff, then reuses downloaded
+files from the `models` volume on later starts. `JEFF_MODEL_REVISION` accepts a Hugging Face branch, tag or
+commit SHA; use a commit SHA to pin the model. No manual download or host model directory is needed.
+The first start includes downloading the model and warming up inference, so allow time for it to become healthy.
+
+There is no `ports` mapping: other services on the same Compose network use `http://jeff:8765`
+(`/health` and `POST /v1/systemone`). The host-side `localhost:8765` example above applies to the native server.
+`docker compose down` preserves the caches; `docker compose down -v` deletes them.
+See [compose.yaml](compose.yaml) for the full configuration and the [Japanese CUDA guide](docs/docker-cuda.ja.md)
+for driver requirements, health checks and troubleshooting.
+
 ## Benchmarks
 
 4,599 questions from five public benchmarks, plus JevBench's public hard tier (105 items, scored separately):
