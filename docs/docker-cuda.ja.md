@@ -39,99 +39,83 @@ GPUがコンテナに渡ることを先に確認します（小さなUbuntuイ�
 docker run --rm --gpus all ubuntu:24.04 nvidia-smi
 ```
 
-## 2. ソースとイメージを準備
-
-UbuntuにフォークのCUDA対応ブランチを取得します。既存の `jeff` ディレクトリがある場合は、
-別の保存先を指定してください。Macの `.venv`、`.tools`、LaunchAgentはコピー不要です。
+## 2. モデルを指定して起動
 
 ```sh
 git clone --branch feat/cuda-docker https://github.com/qtmleap/jeff.git
 cd jeff
-# 想定コミットとローカル変更を確認（既存作業を強制リセットしない）
-git rev-parse HEAD
-git status --short
-# このシェルで後続コマンドも実行する
-export JEFF_MODEL_DIR="$HOME/models/Jeff-Qwen3.5-2B"
-export JEFF_HTTP_PORT=8766
-mkdir -p "$JEFF_MODEL_DIR"
-docker compose config --quiet
-export JEFF_IMAGE=ghcr.io/qtmleap/jeff:latest
 docker compose pull jeff
+docker compose up -d --no-build --pull never
+docker compose logs -f --tail 100 jeff
 ```
 
-公開済みイメージを使う場合は上記のpullでビルドを省略できます。運用時はActionsの実行サマリーにある
-`ghcr.io/qtmleap/jeff@sha256:...` をJEFF_IMAGEに指定するとdigestで固定できます。
-パッケージの公開範囲は組織設定に従います。privateの場合は既存の認可済みレジストリ認証を使用してください。
-この手順はPATの新規発行や公開設定変更を要求しません。pull権限がなければ管理者に確認するか、次のローカルビルドを使います。
+標準モデルは `mstrasser/Jeff-Qwen3.5-2B`。別モデルを指定する場合は同じディレクトリの `.env` に記載します。
+モデルは通常のQwenではなく、Jeff用に学習されたチェックポイントを指定してください。
 
-ローカルでビルドする場合は次に切り替えます。
+```dotenv
+JEFF_MODEL_REPO=mstrasser/Jeff-Qwen3.5-2B
+JEFF_MODEL_REVISION=main
+```
+
+`JEFF_MODEL_REVISION` は省略可能で、初期値は `main` です。毎回同じモデル版を使いたい場合は
+`2b1055eddeb00788f22c0b6156b8d6fa6fc0eecd` のような、そのモデルのコミットSHAを指定してください。
+モデル名だけ変更したときに別モデルのSHAを引き継がないよう注意してください。
+
+起動時にHugging Faceから全checkpoint（readout・decision_config・tokenizerを含む）を自動取得し、
+UID 10001が書き込める `models` ボリュームに保存します。取得後のsnapshotパスを
+`JEFF_CHECKPOINT`へ渡してJeffを起動するため、ホストのモデルパス指定や手動ダウンロードは不要です。
+取得失敗や必須ファイル不足なら起動に失敗し、未完成のモデルを使いません。
+
+保存済みblobは再利用し、中断されたダウンロードはHugging Faceの仕組みで再開します。
+モデル・revisionごとにsnapshotを分離するため、切り替えても重みを混ぜません。
+`main`では起動ごとに更新を確認します。ネットワークなしでキャッシュだけを使用したい場合は
+`HF_HUB_OFFLINE: "1"` をサービスのenvironmentへ追加してください。未取得モデルはofflineでは起動できません。
+公開モデルを対象とし、保存済み認証トークンは暗黙に使用しません。
+
+初回はモデル約4.2GBの取得が必要です。ログで `Starting Jeff with checkpoint` と起動完了を確認してください。
+healthcheckの初期待機期間は30分です。完了を待つ場合は `docker compose up -d --no-build --pull never --wait --wait-timeout 1800`。
+回線によってはさらに時間がかかります。healthcheckのunhealthyだけではDockerは再起動しません。
+
+モデル設定を変更した場合は `docker compose up -d --no-build --pull never` を再実行してコンテナを再作成します。
+
+ローカルビルドも可能です。
 
 ```sh
 export JEFF_IMAGE=jeff-cuda:local
 docker compose build jeff
+docker compose up -d --no-build --pull never
 ```
 
-初回ビルドはCUDA依存のため数GB以上を取得します。ディスクはモデル約4.2GBに加え、イメージ・
-ビルドキャッシュ用に余裕を確保してください。`.dockerignore`は許可したソースだけを送るため、
-モデル、仮想環境、Git履歴、通常の秘密情報はbuild contextに入りません。
-資格情報をソースコードへ直接書かないでください。
+## 3. 接続と検証
 
-## 3. 固定リビジョンの全モデルを取得
-
-新規または同じモデル専用のディレクトリを使用してください。別モデルの既存ファイルを混ぜないでください。
-このダウンロードはGPU不要です。公開モデルなのでトークンは指定しません。
+既定では `ports` を公開しません。同じComposeネットワークのアプリから **`http://jeff:8765`** へ接続します。
+ホストからのlocalhostアクセスはできません。コンテナ内でヘルスと分類を検証できます。
 
 ```sh
-docker run --rm \
-  --user "$(id -u):$(id -g)" \
-  -e HF_HOME=/tmp/hf -e HF_HUB_DISABLE_IMPLICIT_TOKEN=1 \
-  --mount "type=bind,src=$JEFF_MODEL_DIR,dst=/download" \
-  --entrypoint /app/.venv/bin/hf "$JEFF_IMAGE" \
-  download mstrasser/Jeff-Qwen3.5-2B \
-  --revision 2b1055eddeb00788f22c0b6156b8d6fa6fc0eecd \
-  --local-dir /download
-
-# 全checkpointを取得する。model.safetensorsだけでは起動できない。
-for f in model.safetensors readout.safetensors decision_config.json config.json \
-         tokenizer.json tokenizer_config.json processor_config.json chat_template.jinja; do
-  test -s "$JEFF_MODEL_DIR/$f" || { echo "Missing: $f"; exit 1; }
-done
-# 公開モデルをコンテナUID 10001から読み取れるようにする
-chmod -R a+rX "$JEFF_MODEL_DIR"
-printf '%s  %s\n' \
-  16a9f5276cb761c7c0a6e4a19de3329a924829e5e381a00337535d45eb70fc5c \
-  "$JEFF_MODEL_DIR/model.safetensors" | sha256sum -c -
+docker compose exec -T jeff python - <<'PYCODE'
+import json, urllib.request
+base = "http://127.0.0.1:8765"
+print(json.load(urllib.request.urlopen(base + "/health")))
+body = {"model": "jeff-latest", "state": "The customer cannot sign in and needs to reset their password.",
+        "questions": {"route": {"type": "choice", "criteria": {
+            "1": "Refunds and payments", "2": "Damaged or lost parcels", "3": "Account and login problems"}}}}
+req = urllib.request.Request(base + "/v1/systemone", data=json.dumps(body).encode(),
+                             headers={"Content-Type": "application/json"})
+print(json.load(urllib.request.urlopen(req, timeout=120)))
+PYCODE
 ```
 
-非root実行ユーザーが読み取り専用マウントを読めることも、GPUなしで先に検証します。
+ヘルスがready、選択肢の確率が合計約1、`output_tokens: 0`となることを確認します。
+Jeffはチャット生成ではなく分類APIです。初期モデルの主な対象は英語テキストです。
+
+GPUとBF16の確認は次のコマンドです。entrypointを置き換えるのでモデルをダウンロードしません。
 
 ```sh
-docker run --rm --user 10001:10001 \
-  --mount "type=bind,src=$JEFF_MODEL_DIR,dst=/models/jeff-2b,readonly" \
-  --entrypoint /app/.venv/bin/python "$JEFF_IMAGE" -c '
-from pathlib import Path
-root = Path("/models/jeff-2b")
-for name in ("model.safetensors", "readout.safetensors", "decision_config.json", "config.json",
-             "tokenizer.json", "tokenizer_config.json", "processor_config.json", "chat_template.jinja"):
-    with (root / name).open("rb") as f:
-        assert f.read(1), name
-print("UID 10001: checkpoint readable")
-'
-```
-
-モデルリビジョンは `2b1055eddeb00788f22c0b6156b8d6fa6fc0eecd`。
-Composeはモデルを読み取り専用でマウントし、存在しないパスの自動作成を拒否します。
-
-## 4. CUDA・BF16を実機で検証
-
-```sh
-docker compose run --rm --no-deps --entrypoint /app/.venv/bin/python jeff -c '
+docker compose run --rm --no-deps --entrypoint python jeff -c '
 import torch
 print("PyTorch:", torch.__version__, "CUDA:", torch.version.cuda)
-assert torch.cuda.is_available(), "CUDA unavailable; CPU fallback is not allowed"
-print("GPU:", torch.cuda.get_device_name(0))
-print("Capability:", torch.cuda.get_device_capability(0))
-print("Compiled arch list:", torch.cuda.get_arch_list())
+assert torch.cuda.is_available(), "CUDA unavailable"
+print(torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0))
 assert torch.cuda.is_bf16_supported(including_emulation=False), "Native BF16 unavailable"
 x = torch.randn((256, 256), device="cuda", dtype=torch.bfloat16)
 y = x @ x
@@ -140,82 +124,31 @@ print(y.device, y.dtype, float(y[0,0]))
 '
 ```
 
-JeffのCUDA実装はBF16を使用します。GPU認識だけでなくBF16演算が通ることが必要です。
-`JEFF_DEVICE=cuda`を明示しており、GPUがなければJeffは起動エラーとなります。
-
-## 5. 起動・推論確認
-
-```sh
-docker compose up -d --no-build --pull never --wait --wait-timeout 300
-docker compose ps
-docker compose logs --tail 100 jeff
-curl --fail-with-body http://127.0.0.1:8766/health
-curl --fail-with-body http://127.0.0.1:8766/v1/systemone \
-  -H 'Content-Type: application/json' -d '{
-  "model": "jeff-latest",
-  "state": "The customer cannot sign in and needs to reset their password.",
-  "questions": {
-    "route": {
-      "type": "choice",
-      "instructions": "Which team should handle this?",
-      "criteria": {"1": "Refunds and payments", "2": "Damaged or lost parcels", "3": "Account and login problems"}
-    }
-  }
-}'
-```
-
-`/health`は `status: ready`、`model: jeff-qwen3.5-2b` を確認します。
-推論は3選択肢の確率（合計約1）、`choice`、`confidence`、`output_tokens: 0` を返すことを確認します。
-この例では通常 `choice: "3"` が期待されますが、出力値の完全一致は要求しません。
-チャット生成APIではなく分類APIです。公式モデルの主な対象は英語テキストです。
-
-別ターミナルで `watch -n 1 nvidia-smi` を実行し、起動後のPythonプロセス・GPUメモリ使用と
-リクエスト中のGPU使用率を確認します。短い推論はサンプリングで見逃すことがあるため数回送ってください。
-`/health`単独では使用GPUを証明しません。上記CUDA/BF16検証、強制CUDA設定、実推論を合わせて確認します。
-
-初回推論ではTriton等のコンパイルに時間がかかる場合があります。UID 10001が書き込める
-`compile-cache`ボリュームにHF・Triton・Torch・CUDAキャッシュを保存します。
-モデルはローカルですが、kernels等が初回に追加コードを取得する場合があるため、完全オフライン動作は未保証です。
-VRAM不足の場合は他のGPUプロセスを確認し、短い入力・単一リクエストで再検証してください。
-RTX 5060実機のVRAM余裕、対応カーネル、速度は現時点では未検証です。
+`JEFF_DEVICE=cuda`を明示し、GPUがなければサーバー起動エラーとなります。CPUへはフォールバックしません。
+ホストの `nvidia-smi` でサーバープロセスのGPUメモリ使用も確認してください。
+初回推論でTriton等のコンパイルが発生する場合があり、コンパイル用キャッシュは別ボリュームに保持します。
+VRAM不足の場合は他のGPUプロセスと入力長を確認してください。RTX 5060上の実推論は未検証です。
 
 ## 運用
 
 ```sh
-docker compose stop                  # 停止。自動再起動を抑制
-docker compose start                 # 再開
-docker compose restart jeff          # 再起動
+docker compose stop
+docker compose start
 docker compose logs -f --tail 100 jeff
-docker compose down                  # コンテナ削除。モデルとキャッシュは保持
+docker compose down     # コンテナだけを削除。モデル・コンパイルキャッシュは保持
 ```
 
-`restart: unless-stopped`によりプロセス終了やDocker再起動後に復帰します（手動停止を除く）。
-ホスト起動時の復帰にはDockerデーモン自体の自動起動が必要です。
-healthcheckがunhealthyになっただけではDockerは再起動しません。ログを確認してください。
-ログは10MB×3ファイルに制限しています。キャッシュを消したい場合だけ `docker compose down -v` を使います。
-
-公開先の初期値は **127.0.0.1:8766** です。コンテナ内は0.0.0.0:8765ですが、LANへは公開しません。
-MacのMLXサービスは127.0.0.1:8765のままで、変更しません。
-環境変数はシェルを閉じると消えるため、次回もJEFF_MODEL_DIRとJEFF_IMAGEを設定してください。
-認証・外部公開はこの構成に含めていません。
+`restart: unless-stopped`を設定しています。ホスト再起動時の復帰にはDockerデーモンの自動起動が必要です。
+ログは10MB×3ファイルに制限しています。**`docker compose down -v` は取得済みモデルも削除します。**
+モデルとコンパイルキャッシュ以外のルートファイルシステムは読み取り専用です。
+既存MacのMLX環境・LaunchAgentは変更しません。
 
 ## 検証範囲
 
-2026-10-01、Mac上で `docker compose config --quiet` と解決済みJSONの検証を実施済みです。
-GPU予約、ループバック公開、モデル読み取り専用、キャッシュ、再起動設定、
-モデルパス未指定時の拒否、全シェル例の `sh -n` とBF16検証コードのPython構文を確認しました。
-Dockerfileは起動・依存・非root・healthcheck設定を静的確認しました。Hadolintは未導入のため未実行です。
-[Actions run 36832222899](https://github.com/qtmleap/jeff/actions/runs/36832222899)で
-コミット `1eeaa49cfe71842c6c547701037dafa2acfa0877` のlinux/amd64イメージをビルド・GHCRへpushしました。
-CUDA 13版PyTorchとJeffのimport確認、両タグの匿名manifest取得とdigest一致を確認済みです。
-固定参照は `ghcr.io/qtmleap/jeff@sha256:39a1554f5809f3401bd7476b15a40f72b732c16ee0362e6a2106caea53cd2296`。
-Macにはイメージレイヤーをダウンロードしていません。既存のMLX環境にも変更を加えていません。
-NVIDIA Container Toolkit連携、CUDA/BF16実演算、GPU推論、再起動復帰はUbuntu実機での上記検証が必要です。
-Actions間のwarm-cacheヒットと短縮時間も未測定です。MacのMLX検証結果をCUDA検証結果として扱わないでください。
-
-参考: [Docker Compose GPU予約](https://docs.docker.com/compose/how-tos/gpu-support/)、
-[Jeff](https://github.com/firelex/jeff)、
-[モデルカード](https://huggingface.co/mstrasser/Jeff-Qwen3.5-2B)。
+起動処理はモデル選択・snapshotパス引き渡し・取得失敗・不完全checkpoint・カスタムコマンドを
+ネットワーク境界を置き換えたユニットテストで確認します。このテストはイメージビルド時にも実行します。
+実モデルの初回ダウンロードとNVIDIA GPUでのサーバー推論は、上記手順によりUbuntu実機で確認してください。
+実行ごとのイメージdigestはGitHub Actionsサマリーを参照してください。
 
 ## GHCR公開とビルドキャッシュ
 
@@ -231,7 +164,7 @@ mainへのマージはこの設定を追加する作業には含まれません�
 ワークフローファイルだけの変更では通常ビルドを起動しません。
 
 初回のlatest追加には `.github/workflows/promote-latest.yaml` を使用します。
-確認済みの上記digestへ `latest` と `upstream-v1.1-1-gf067882` を追加するだけで、再ビルドしません。
+移行ワークフロー内で固定した確認済みdigestへ `latest` と `upstream-v1.1-1-gf067882` を追加するだけで、再ビルドしません。
 この移行ワークフローは自身の変更pushだけで起動し、既存の対象タグが別digestなら上書きせず失敗します。
 後日latestが更新された後に古いdigestへ戻す用途には使わないでください。
 権限は `contents: read` と公開ジョブの `packages: write`、認証は標準 `GITHUB_TOKEN` のみです。

@@ -8,6 +8,10 @@
 !LICENSE
 !src/
 !src/**
+!docker/
+!docker/entrypoint.py
+!tests/
+!tests/test_container_entrypoint.py
 # Even inside src, exclude accidental local files and credentials.
 **/__pycache__
 **/*.pyc

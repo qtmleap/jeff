@@ -30,7 +30,9 @@ RUN python -c "import torch, jeff.server; assert torch.version.cuda and torch.ve
 
 ENV JEFF_BACKEND=pytorch \
     JEFF_DEVICE=cuda \
-    JEFF_CHECKPOINT=/models/jeff-2b \
+    JEFF_MODEL_REPO=mstrasser/Jeff-Qwen3.5-2B \
+    JEFF_MODEL_REVISION=main \
+    JEFF_MODEL_CACHE=/models \
     JEFF_HOST=0.0.0.0 \
     PORT=8765 \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
@@ -40,8 +42,13 @@ ENV JEFF_BACKEND=pytorch \
     TRITON_CACHE_DIR=/cache/triton \
     TORCHINDUCTOR_CACHE_DIR=/cache/torchinductor \
     CUDA_CACHE_PATH=/cache/cuda
+RUN install -d -o jeff -g jeff /models
+COPY docker/entrypoint.py /app/docker/entrypoint.py
 USER 10001:10001
+RUN --mount=type=bind,source=tests,target=/app/tests \
+    python /app/tests/test_container_entrypoint.py && test -w /models && test -w /cache
 EXPOSE 8765
-HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=5 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30m --retries=5 \
     CMD ["/app/.venv/bin/python", "-c", "import json,urllib.request; r=json.load(urllib.request.urlopen('http://127.0.0.1:8765/health',timeout=5)); assert r['status']=='ready'"]
+ENTRYPOINT ["/app/.venv/bin/python", "/app/docker/entrypoint.py"]
 CMD ["/app/.venv/bin/jeff-serve"]

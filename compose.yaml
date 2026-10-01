@@ -9,21 +9,17 @@ services:
     init: true
     restart: unless-stopped
     stop_grace_period: 30s
-    ports:
-      - "127.0.0.1:${JEFF_HTTP_PORT:-8766}:8765"
     environment:
       JEFF_BACKEND: pytorch
       JEFF_DEVICE: cuda
-      JEFF_CHECKPOINT: /models/jeff-2b
+      JEFF_MODEL_REPO: ${JEFF_MODEL_REPO:-mstrasser/Jeff-Qwen3.5-2B}
+      JEFF_MODEL_REVISION: ${JEFF_MODEL_REVISION:-main}
       JEFF_HOST: 0.0.0.0
       PORT: "8765"
     volumes:
-      - type: bind
-        source: ${JEFF_MODEL_DIR:?Set JEFF_MODEL_DIR to the absolute checkpoint directory}
-        target: /models/jeff-2b
-        read_only: true
-        bind:
-          create_host_path: false
+      - type: volume
+        source: models
+        target: /models
       - type: volume
         source: compile-cache
         target: /cache
@@ -47,4 +43,5 @@ services:
         max-size: "10m"
         max-file: "3"
 volumes:
+  models:
   compile-cache:

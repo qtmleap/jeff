@@ -9,6 +9,8 @@ on:
       - pyproject.toml
       - uv.lock
       - src/**
+      - docker/**
+      - tests/test_container_entrypoint.py
       - README.md
       - LICENSE
   workflow_dispatch:
